@@ -38,8 +38,13 @@ public class SeoCrawler {
     private final CrawlConfig config;
     private final Listener listener;
     private final HttpClient http;
+    private final HttpClient http11;
+    private final Set<String> h1Hosts = ConcurrentHashMap.newKeySet();
     private final RobotsCache robots;
     private final ConcurrentHashMap<String, Boolean> seen = new ConcurrentHashMap<>();
+    private final Set<String> noResponse = ConcurrentHashMap.newKeySet();
+    private final Set<String> noResponseRetried = ConcurrentHashMap.newKeySet();
+    private final Set<String> emitted = ConcurrentHashMap.newKeySet();
     private final ConcurrentHashMap<String, Integer> depthOf = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, AtomicInteger> inlinkCount = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, List<LinkRef>> inlinkFrom = new ConcurrentHashMap<>();
@@ -63,7 +68,23 @@ public class SeoCrawler {
                 .version(HttpClient.Version.HTTP_2)
                 .executor(Executors.newCachedThreadPool())
                 .build();
+        // HTTP/1.1 fallback client: some shared hosts / WAFs intermittently kill
+        // Java HTTP/2 (ALPN) handshakes under burst load while h1 sails through.
+        this.http11 = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .version(HttpClient.Version.HTTP_1_1)
+                .executor(Executors.newCachedThreadPool())
+                .build();
         this.robots = new RobotsCache(http, config.userAgent);
+    }
+
+    /** h2 by default; hosts that killed an h2 handshake stay on h1 for this crawl. */
+    private HttpClient clientFor(String url) {
+        try {
+            if (h1Hosts.contains(UrlUtil.hostOf(url))) return http11;
+        } catch (Exception ignored) {}
+        return http;
     }
 
     public void start() {
@@ -117,6 +138,7 @@ public class SeoCrawler {
         if (stop.get()) return;
         if (crawled.get() >= config.maxUrls) return;
         int depth = depthOf.getOrDefault(url, 0);
+        int attempts = 0;
 
         try {
             if (config.respectRobots && !robots.isAllowed(url)) {
@@ -131,36 +153,61 @@ public class SeoCrawler {
             Exception fetchError = null;
             long totalMs = 0;
             long delayBeforeNext = 0;
-            // Two attempts: transient network faults, 429 throttling and flaky
-            // 5xx (e.g. WP fatals under concurrency) are retried once.
-            for (int attempt = 0; attempt < 2; attempt++) {
+            // Three attempts with backoff: transient network faults, 429 throttling
+            // and flaky 5xx (e.g. WP fatals under concurrency) must not become
+            // false-positive error rows that vanish on recrawl.
+            for (int attempt = 0; attempt < 3; attempt++) {
                 if (stop.get()) break;
                 if (delayBeforeNext > 0) sleep(delayBeforeNext);
                 delayBeforeNext = 0;
-                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-                        .timeout(Duration.ofSeconds(config.timeoutSeconds))
-                        .header("User-Agent", config.userAgent)
-                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/*,*/*;q=0.8")
-                        .header("Accept-Encoding", "gzip")
-                        .GET().build();
+                HttpRequest req = buildGet(url);
                 long t0 = System.nanoTime();
+                attempts++;
                 try {
-                    res = http.send(req, HttpResponse.BodyHandlers.ofByteArray());
+                    res = clientFor(url).send(req, HttpResponse.BodyHandlers.ofByteArray());
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     fetchError = ie; res = null; break;
                 } catch (Exception e) {
-                    fetchError = e; res = null; delayBeforeNext = 700;
+                    fetchError = e; res = null;
+                    if (e instanceof javax.net.ssl.SSLException) {
+                        // Killed h2 handshake: pin this host to HTTP/1.1 and retry fast.
+                        try { h1Hosts.add(UrlUtil.hostOf(url)); } catch (Exception ignored) {}
+                        delayBeforeNext = 300;
+                    } else {
+                        delayBeforeNext = 700;
+                    }
                     continue;
                 }
                 totalMs += (System.nanoTime() - t0) / 1_000_000;
                 fetchError = null;
                 int sc = res.statusCode();
-                if (attempt == 0 && (sc == 429 || sc == 500 || sc == 502 || sc == 503 || sc == 504)) {
-                    delayBeforeNext = sc == 429 ? retryAfterMs(res) : 1500;
+                if (attempt < 2 && (sc == 429 || sc == 500 || sc == 502 || sc == 503 || sc == 504)) {
+                    delayBeforeNext = sc == 429 ? retryAfterMs(res) : (attempt == 0 ? 1500 : 3000);
                     continue;
                 }
                 break;
+            }
+            // Confirm-before-record: a 5xx surviving all retries is re-checked once
+            // after a cooldown. A transient blip resolves to its real status here
+            // instead of being stored as a false-positive Server Error.
+            if (res != null && !stop.get()) {
+                int sc = res.statusCode();
+                if (sc >= 500 && sc < 600) {
+                    sleep(2500);
+                    if (!stop.get()) {
+                        try {
+                            long t0 = System.nanoTime();
+                            attempts++;
+                            HttpResponse<byte[]> confirm = clientFor(url).send(buildGet(url),
+                                    HttpResponse.BodyHandlers.ofByteArray());
+                            totalMs += (System.nanoTime() - t0) / 1_000_000;
+                            if (confirm.statusCode() < 500) res = confirm;
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        } catch (Exception ignored) { /* keep original 5xx */ }
+                    }
+                }
             }
 
             if (res == null) {
@@ -169,12 +216,22 @@ public class SeoCrawler {
                         && schemeFallbackDone.compareAndSet(false, true)) {
                     String httpUrl = "http://" + initialUrl.substring("https://".length());
                     listener.onMessage("HTTPS failed (" + (fetchError == null ? "no response" : shortMsg(fetchError)) + "), retrying with HTTP…");
+                    noResponse.add(url);
                     seen.put(httpUrl, true); depthOf.put(httpUrl, 0); queue.add(httpUrl);
                     return;
                 }
+                noResponse.add(url);
                 CrawledPage nr = new CrawledPage(url, depth);
-                nr.setStatusText(fetchError == null ? "No response" : "Fetch error: " + shortMsg(fetchError));
-                nr.addIssue(fetchError == null ? "No Response" : "Fetch Error: " + shortMsg(fetchError));
+                nr.setFetchAttempts(attempts);
+                nr.setFetchProto(protoUsed(url));
+                if (fetchError == null) {
+                    nr.setStatusText("No response");
+                    nr.addIssue("No Response");
+                } else {
+                    nr.setStatusText("Fetch error: " + shortMsg(fetchError));
+                    nr.addIssue("Fetch Error (" + fetchError.getClass().getSimpleName() + "): " + shortMsg(fetchError));
+                    nr.setErrorDetail(errorDetailOf(fetchError, attempts, nr.getFetchProto()));
+                }
                 nr.rebuildIssueString();
                 emit(nr);
                 return;
@@ -188,6 +245,15 @@ public class SeoCrawler {
             String ctype = res.headers().firstValue("content-type").orElse("");
             page.setContentType(ctype);
             page.setXRobots(res.headers().firstValue("x-robots-tag").orElse("").toLowerCase());
+            page.setServerHeader(res.headers().firstValue("server").orElse(""));
+            page.setContentLength(res.headers().firstValue("content-length").orElse(""));
+            List<String> setCookies = res.headers().allValues("set-cookie");
+            if (!setCookies.isEmpty()) {
+                String joined = String.join("\n", setCookies);
+                if (joined.length() > 2000) joined = joined.substring(0, 2000) + "\n… (truncated)";
+                page.setCookies(joined);
+            }
+            SeoAnalyzer.fillUrlParts(page, url);
             byte[] body = res.body() == null ? new byte[0] : res.body();
             // Java's HttpClient doesn't auto-decompress: gunzip saves most of the transfer.
             String enc = res.headers().firstValue("content-encoding").orElse("");
@@ -204,13 +270,15 @@ public class SeoCrawler {
             // /page -> /page/ slash redirects into false self-loops.)
             if (code >= 300 && code < 400) {
                 page.setContentKind("Redirect");
+                page.setIndexable("Non-Indexable");
                 String loc = res.headers().firstValue("location").orElse("");
                 String target = loc.isEmpty() ? null : UrlUtil.normalize(loc, url);
                 if (target == null) {
                     page.addIssue("Redirect Without Location");
                 } else {
+                    page.setRedirectUri(target);
                     page.setRedirectChain(code + " → " + target);
-                    page.addIssue("Redirect " + code + " → " + target);
+                    page.addIssue("Redirect " + code);
                     enqueueTarget(target, url, depth);
                 }
                 page.rebuildIssueString();
@@ -225,7 +293,7 @@ public class SeoCrawler {
                 Document doc = SeoAnalyzer.parse(html, url); // parsed once, shared below
                 SeoAnalyzer.analyze(page, html, url, doc);
                 // discover links (BFS) — from every HTML page, like SF
-                List<LinkRef> links = SeoAnalyzer.extractLinks(doc);
+                List<LinkRef> links = SeoAnalyzer.extractLinks(doc, url);
                 page.setOutlinks(links.size());
                 page.getOutlinkRefs().addAll(links.stream().limit(500).toList());
                 if (depth < config.maxDepth) {
@@ -234,16 +302,41 @@ public class SeoCrawler {
                         String n = UrlUtil.normalize(link.getTarget(), url);
                         if (n == null) continue;
                         if (!config.followExternal && !UrlUtil.inScope(n, startHost, config.includeSubdomains)) {
-                            // record external as stub page (like SF External tab) once
+                            // record external as stub page (SF External tab). Not an issue by itself.
+                            noteLink(n, url, link.getAnchor(), link.getRel());
                             if (seen.putIfAbsent("ext:" + n, true) == null) {
                                 CrawledPage ext = new CrawledPage(n, depth + 1);
                                 ext.setContentKind("External"); ext.setStatusText("Not crawled (external)");
-                                ext.addIssue("External Link"); ext.rebuildIssueString();
+                                ext.setIndexable("Non-Indexable");
+                                ext.rebuildIssueString();
                                 emitExternal(ext);
                             }
                             continue;
                         }
                         noteLink(n, url, link.getAnchor(), link.getRel());
+                        if (seen.putIfAbsent(n, true) == null) {
+                            depthOf.put(n, depth + 1);
+                            queue.add(n);
+                        }
+                    }
+                    // page resources (SF parity): CSS, JS, images, media, frames become
+                    // crawled rows (Internal) or stubs (External). Not counted as outlinks.
+                    for (SeoAnalyzer.ResourceLink rlink : SeoAnalyzer.extractResources(doc)) {
+                        if (stop.get() || crawled.get() + queue.size() >= config.maxUrls) break;
+                        String n = UrlUtil.normalize(rlink.url(), url);
+                        if (n == null) continue;
+                        if (!config.followExternal && !UrlUtil.inScope(n, startHost, config.includeSubdomains)) {
+                            noteLink(n, url, "", "resource:" + rlink.kind());
+                            if (seen.putIfAbsent("ext:" + n, true) == null) {
+                                CrawledPage ext = new CrawledPage(n, depth + 1);
+                                ext.setContentKind("External"); ext.setStatusText("Not crawled (external)");
+                                ext.setIndexable("Non-Indexable");
+                                ext.rebuildIssueString();
+                                emitExternal(ext);
+                            }
+                            continue;
+                        }
+                        noteLink(n, url, "", "resource:" + rlink.kind());
                         if (seen.putIfAbsent(n, true) == null) {
                             depthOf.put(n, depth + 1);
                             queue.add(n);
@@ -260,14 +353,18 @@ public class SeoCrawler {
                 else page.setContentKind("Other");
                 if (code >= 400 && code < 500) page.addIssue("Client Error " + code);
                 if (code >= 500) page.addIssue("Server Error " + code);
+                if (code != 200) page.setIndexable("Non-Indexable");
                 page.rebuildIssueString();
             }
             emit(page);
-        } catch (Exception e) {
-            // Only processing-stage failures reach here (fetch has its own retries above).
+        } catch (Throwable e) {
+            // Throwable (not just Exception): a LinkageError here must also become a
+            // visible row — never a silently dead worker that freezes the crawl UI.
             CrawledPage err = new CrawledPage(url, depth);
             err.setStatusText("Processing error: " + shortMsg(e));
-            err.addIssue("Processing Error: " + shortMsg(e)); err.rebuildIssueString();
+            err.addIssue("Processing Error (" + e.getClass().getSimpleName() + "): " + shortMsg(e));
+            err.setErrorDetail(errorDetailOf(e, attempts, protoUsed(url)));
+            err.rebuildIssueString();
             emit(err);
         }
     }
@@ -275,16 +372,27 @@ public class SeoCrawler {
     /** Queue a redirect target (or record an external stub). Self-redirects
      * can't loop: an already-seen target is simply not re-queued. */
     private void enqueueTarget(String target, String source, int depth) {
+        noteLink(target, source, "", "");
+        if (seen.containsKey(target) && noResponse.contains(target) && !emitted.contains(target)
+                && noResponseRetried.add(target)) {
+            // Redirect loops back to a URL that never produced a response (e.g. the
+            // start URL whose first fetch failed): allow ONE retry so a transient
+            // failure can't end the crawl with a single redirect row. Bounded — after
+            // the retry the URL is emitted, so further loops are dropped as before.
+            depthOf.put(target, depth + 1);
+            queue.add(target);
+            return;
+        }
         if (!config.followExternal && !UrlUtil.inScope(target, startHost, config.includeSubdomains)) {
             if (seen.putIfAbsent("ext:" + target, true) == null) {
                 CrawledPage ext = new CrawledPage(target, depth + 1);
                 ext.setContentKind("External"); ext.setStatusText("Not crawled (external)");
-                ext.addIssue("External Link"); ext.rebuildIssueString();
+                ext.setIndexable("Non-Indexable");
+                ext.rebuildIssueString();
                 emitExternal(ext);
             }
             return;
         }
-        noteLink(target, source, "", "");
         if (depth + 1 <= config.maxDepth && seen.putIfAbsent(target, true) == null) {
             depthOf.put(target, depth + 1);
             queue.add(target);
@@ -294,20 +402,40 @@ public class SeoCrawler {
     private void noteLink(String target, String source, String anchor, String rel) {
         inlinkCount.computeIfAbsent(target, k -> new AtomicInteger(0)).incrementAndGet();
         inlinkFrom.computeIfAbsent(target, k -> java.util.Collections.synchronizedList(new java.util.ArrayList<>()))
-                .add(new LinkRef(source, anchor, rel));
+                .add(new LinkRef(source, target, anchor, rel));
     }
 
     /** Live index: target URL -> link instances pointing at it. Powers the Inlinks tab. */
     public Map<String, List<LinkRef>> getInlinkIndex() { return inlinkFrom; }
 
+    public Map<String, Integer> getInlinkCounts() {
+        Map<String, Integer> m = new java.util.HashMap<>();
+        inlinkCount.forEach((k, v) -> m.put(k, v.get()));
+        return m;
+    }
+
     private void emit(CrawledPage p) {
+        if (p.getUrlScheme().isEmpty() && p.getUrl() != null && !p.getUrl().isEmpty())
+            SeoAnalyzer.fillUrlParts(p, p.getUrl());
+        emitted.add(p.getUrl());
         crawled.incrementAndGet();
         try { listener.onPage(p); } catch (Exception ignored) {}
         listener.onProgress(crawled.get(), queue.size(), active.get());
     }
 
     private void emitExternal(CrawledPage p) {
+        if (p.getUrlScheme().isEmpty() && p.getUrl() != null && !p.getUrl().isEmpty())
+            SeoAnalyzer.fillUrlParts(p, p.getUrl());
         try { listener.onPage(p); } catch (Exception ignored) {}
+    }
+
+    private HttpRequest buildGet(String url) {
+        return HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(config.timeoutSeconds))
+                .header("User-Agent", config.userAgent)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/*,*/*;q=0.8")
+                .header("Accept-Encoding", "gzip")
+                .GET().build();
     }
 
     /** Honour Retry-After (seconds) on 429, clamped to 1–10s. */
@@ -320,7 +448,29 @@ public class SeoCrawler {
     }
 
     /** Short human-readable cause for error rows ("request timed out", …). */
-    private static String shortMsg(Exception e) {
+    private String protoUsed(String url) {
+        try { return h1Hosts.contains(UrlUtil.hostOf(url)) ? "h1" : "h2"; }
+        catch (Exception ignored) { return "?"; }
+    }
+
+    /** Full fetch diagnostics for the details pane (class + message + stack head). */
+    private static String errorDetailOf(Throwable e, int attempts, String proto) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(e.getClass().getName());
+        String m = e.getMessage();
+        if (m != null && !m.isBlank()) sb.append(": ").append(m.trim());
+        sb.append("  [attempts=").append(attempts).append(" proto=").append(proto).append("]");
+        int shown = 0;
+        for (StackTraceElement st : e.getStackTrace()) {
+            if (shown >= 6) break;
+            sb.append("\n  at ").append(st.toString());
+            shown++;
+        }
+        String s = sb.toString();
+        return s.length() > 2000 ? s.substring(0, 2000) + "\n… (truncated)" : s;
+    }
+
+    private static String shortMsg(Throwable e) {
         String m = e.getMessage();
         if (m == null || m.isBlank()) m = e.getClass().getSimpleName();
         m = m.trim();

@@ -7,8 +7,8 @@
   <artifactId>arachnode</artifactId>
   <version>1.0.0</version>
   <packaging>jar</packaging>
-  <name>Arachnode - SEO Spider Clone</name>
-  <description>Screaming Frog style desktop website crawler. Java 21 + JavaFX + Virtual Threads.</description>
+  <name>Arachnode - SEO Spider</name>
+  <description>Desktop SEO spider and website crawler. Java 21 + JavaFX + Virtual Threads.</description>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

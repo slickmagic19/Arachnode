@@ -5,7 +5,7 @@ public class CrawlConfig {
     public String startUrl = "https://example.com";
     public int maxUrls = Integer.MAX_VALUE; // unlimited (paid-SF behaviour)
     public int maxDepth = 12;
-    public int threads = 20;
+    public int threads = 10;
     // Browser-like UA: many servers/WAFs block unknown bot tokens with 403.
     public String userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Arachnode/1.0";
     public boolean followExternal = false;

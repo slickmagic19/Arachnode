@@ -13,13 +13,14 @@ public final class CrawlExporter {
 
     public static void toCsv(List<CrawledPage> pages, Path file) throws Exception {
         try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(file))) {
-            w.println("URL,Status,Content Type,Title,Title Length,Meta Description,Meta Length,H1,H1 Count,H2 Count,Word Count,Canonical,Meta Robots,Depth,Inlinks,Outlinks,Images,Missing Alt,Response ms,Size,Issues");
+            w.println("URL,Status,Status Text,Content Kind,Content Type,Title,Title Length,Meta Description,Meta Length,Meta Keywords,H1,H1 Count,H2 Count,Word Count,Canonical,Meta Robots,X-Robots,Indexable,Hreflang Count,Redirect URI,Redirect Chain,Content Hash,Depth,Inlinks,Outlinks,Images,Missing Alt,Response ms,Size,Issues");
             for (CrawledPage p : pages) {
-                w.println(csv(p.getUrl()) + "," + p.getStatusCode() + "," + csv(p.getContentType()) + "," +
+                w.println(csv(p.getUrl()) + "," + p.getStatusCode() + "," + csv(p.getStatusText()) + "," + csv(p.getContentKind()) + "," + csv(p.getContentType()) + "," +
                         csv(p.getTitle()) + "," + p.getTitleLength() + "," + csv(p.getMetaDescription()) + "," +
-                        p.getMetaDescLength() + "," + csv(p.getH1()) + "," + p.getH1Count() + "," + p.getH2Count() + "," +
-                        p.getWordCount() + "," + csv(p.getCanonical()) + "," + csv(p.getMetaRobots()) + "," +
-                        p.getDepth() + "," + p.getInlinks() + "," + p.getOutlinks() + "," + p.getImageCount() + "," +
+                        p.getMetaDescLength() + "," + csv(p.getMetaKeywords()) + "," + csv(p.getH1()) + "," + p.getH1Count() + "," + p.getH2Count() + "," +
+                        p.getWordCount() + "," + csv(p.getCanonical()) + "," + csv(p.getMetaRobots()) + "," + csv(p.getXRobots()) + "," +
+                        csv(p.getIndexable()) + "," + p.getHreflangCount() + "," + csv(p.getRedirectUri()) + "," + csv(p.getRedirectChain()) + "," +
+                        csv(p.getContentHash()) + "," + p.getDepth() + "," + p.getInlinks() + "," + p.getOutlinks() + "," + p.getImageCount() + "," +
                         p.getImagesMissingAlt() + "," + p.getResponseTimeMs() + "," + p.getSizeBytes() + "," + csv(p.getIssues()));
             }
         }
