@@ -170,8 +170,10 @@
 .menu-button.btn .label { -fx-text-fill: -body; -fx-font-size: 11.5px; -fx-font-weight: bold; }
 
 .table-view { -fx-table-cell-border-color: #edf0f5; -fx-background-color: #ffffff; -fx-padding: 0; }
-.table-view .column-header { -fx-background-color: #f8fafc; -fx-border-color: #e2e6ee; -fx-font-weight: bold; -fx-padding: 6 4 6 4; }
-.table-view .column-header .label { -fx-text-fill: #334155; -fx-alignment: center-left; }
+.table-view .column-header { -fx-background-color: #f8fafc; -fx-border-color: #e2e6ee; -fx-font-weight: bold; -fx-padding: 6 4 6 4; -fx-cursor: hand; }
+.table-view .column-header:hover { -fx-background-color: #e8eef7; }
+.table-view .column-header .label { -fx-text-fill: #334155; -fx-alignment: center-left; -fx-cursor: hand; }
+.table-view .column-header:hover .label { -fx-text-fill: #1d4ed8; }
 .table-view .table-cell { -fx-padding: 5 8 5 8; -fx-alignment: center-left; -fx-text-fill: #1e293b; }
 /* Strong, readable selection: deep blue bar + dark text + left accent. Fixes washed-out white-on-pale-blue. */
 .table-view:focused .table-row-cell:selected { -fx-background-color: #2563eb; -fx-table-cell-border-color: #1d4ed8; }

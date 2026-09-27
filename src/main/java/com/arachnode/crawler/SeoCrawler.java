@@ -170,12 +170,21 @@ public class SeoCrawler {
                     fetchError = ie; res = null; break;
                 } catch (Exception e) {
                     fetchError = e; res = null;
-                    if (e instanceof javax.net.ssl.SSLException) {
-                        // Killed h2 handshake: pin this host to HTTP/1.1 and retry fast.
+                    if (e instanceof javax.net.ssl.SSLException
+                            || e instanceof java.net.http.HttpTimeoutException) {
+                        // Killed or stalled h2 connection: pin this host to HTTP/1.1
+                        // and retry fast. Bursty multiplexed HTTP/2 (10 threads on
+                        // one connection) stalls on some hosts/WAFs/CDNs — e.g.
+                        // Cloudflare-fronted WordPress — while plain HTTP/1.1 sails
+                        // through. Screaming Frog fetches h1-style, which is why it
+                        // doesn't see these timeouts. HttpTimeoutException covers
+                        // both connect and request timeouts (subclass).
                         try { h1Hosts.add(UrlUtil.hostOf(url)); } catch (Exception ignored) {}
                         delayBeforeNext = 300;
                     } else {
-                        delayBeforeNext = 700;
+                        // Exponential backoff: re-hammering a struggling server
+                        // 700ms later usually times out again — give it room.
+                        delayBeforeNext = attempt == 0 ? 700 : attempt == 1 ? 1500 : 3000;
                     }
                     continue;
                 }

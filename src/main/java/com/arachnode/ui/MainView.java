@@ -10,6 +10,7 @@ import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 import javafx.collections.transformation.FilteredList;
+import javafx.collections.transformation.SortedList;
 import javafx.geometry.Insets;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
@@ -44,6 +45,7 @@ public class MainView {
     private final Stage stage;
     private final ObservableList<CrawledPage> allPages = FXCollections.observableArrayList();
     private final FilteredList<CrawledPage> filtered = new FilteredList<>(allPages, p -> true);
+    private SortedList<CrawledPage> sorted;
     private TableView<CrawledPage> table;
     private VBox detailsBox;
     private ScrollPane detailsScroll;
@@ -53,6 +55,7 @@ public class MainView {
     private Tab imgTab;
     private TableView<CrawledPage> resTable, dupTable;
     private FilteredList<CrawledPage> resFiltered;
+    private SortedList<CrawledPage> resSorted;
     private Tab resTab, dupTab;
     private Label serpTitle, serpUrl, serpDesc;
     private Tab serpTab;
@@ -180,8 +183,12 @@ public class MainView {
 
         Menu help = new Menu("Help");
         MenuItem about = new MenuItem("About Arachnode");
-        about.setOnAction(e -> new Alert(Alert.AlertType.INFORMATION,
-                "Arachnode 1.1 — desktop SEO spider.\nJava 21 + JavaFX + Virtual Threads.\nEnter a URL and press Start.").showAndWait());
+        about.setOnAction(e -> {
+            var a = new Alert(Alert.AlertType.INFORMATION,
+                    "Arachnode 1.1 — desktop SEO spider.\nJava 21 + JavaFX + Virtual Threads.\nEnter a URL and press Start.");
+            brandDialog(a);
+            a.showAndWait();
+        });
         help.getItems().add(about);
         menu.getMenus().addAll(file, crawlMenu, help);
 
@@ -401,7 +408,10 @@ public class MainView {
         chipScroll.setMaxHeight(34);
         HBox.setHgrow(chipScroll, Priority.ALWAYS);
 
-        table = new TableView<>(filtered);
+        table = new TableView<>();
+        sorted = new SortedList<>(filtered);
+        sorted.comparatorProperty().bind(table.comparatorProperty());
+        table.setItems(sorted);
         table.setPlaceholder(new Label("No URLs yet — start a crawl above."));
         table.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
         table.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
@@ -453,6 +463,9 @@ public class MainView {
                 !"HTML".equals(p.getContentKind()) && !"Redirect".equals(p.getContentKind())
                         && !"External".equals(p.getContentKind()));
         resTable = makeResourceTable();
+        resSorted = new SortedList<>(resFiltered);
+        resSorted.comparatorProperty().bind(resTable.comparatorProperty());
+        resTable.setItems(resSorted);
         resTab = new Tab("Resources", resTable);
         resTab.setClosable(false);
 
@@ -583,12 +596,47 @@ public class MainView {
         if (cur != null) tabGroup.selectToggle(cur);
     }
 
+    private static final Set<String> NUMERIC_PROPS = Set.of("statusCode", "titleLength", "metaDescLength",
+            "h1Count", "h2Count", "wordCount", "depth", "inlinks", "outlinks", "imageCount", "imagesMissingAlt",
+            "responseTimeMs", "sizeBytes", "hreflangCount", "urlLength", "scriptCount", "scriptSrcCount",
+            "jsonLdCount", "nofollowCount", "followCount");
+
+    /** Shared header setup: plain text header (native ▲/▼ arrow shows when sorted).
+     *  NOTE: no custom graphic here — an earlier ↕ graphic likely swallowed the
+     *  first header click, forcing a double-click to sort. */
+    private static void markSortable(TableColumn<?, ?> col, String title) {
+        col.setText(title);
+        col.setGraphic(null);
+        col.setSortable(true);
+    }
+
     private void addCol(String title, String prop, int width) {
-        TableColumn<CrawledPage, String> c = new TableColumn<>(title);
-        c.setCellValueFactory(new PropertyValueFactory<>(prop));
-        c.setPrefWidth(width);
-        c.setSortable(true);
-        table.getColumns().add(c);
+        if (NUMERIC_PROPS.contains(prop)) {
+            TableColumn<CrawledPage, Number> c = new TableColumn<>();
+            c.setCellValueFactory(new PropertyValueFactory<>(prop));
+            c.setPrefWidth(width);
+            markSortable(c, title);
+            // Null-safe numeric sort (missing values go last).
+            c.setComparator((a, b) -> {
+                double x = a == null ? Double.POSITIVE_INFINITY : a.doubleValue();
+                double y = b == null ? Double.POSITIVE_INFINITY : b.doubleValue();
+                return Double.compare(x, y);
+            });
+            table.getColumns().add(c);
+        } else {
+            TableColumn<CrawledPage, String> c = new TableColumn<>();
+            c.setCellValueFactory(new PropertyValueFactory<>(prop));
+            c.setPrefWidth(width);
+            markSortable(c, title);
+            // Case-insensitive, null-safe text sort (Screaming Frog sorts titles/meta naturally).
+            c.setComparator((a, b) -> {
+                if (a == b) return 0;
+                if (a == null) return 1;
+                if (b == null) return -1;
+                return String.CASE_INSENSITIVE_ORDER.compare(a, b);
+            });
+            table.getColumns().add(c);
+        }
     }
 
     // ---------- SF-style context menus ----------
@@ -683,7 +731,11 @@ public class MainView {
             fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("CSV", "*.csv"));
             File f = fc.showSaveDialog(stage); if (f == null) return;
             try { CrawlExporter.toCsv(pages, f.toPath()); setStatus("Exported " + pages.size() + " selected rows: " + f); }
-            catch (Exception ex) { new Alert(Alert.AlertType.ERROR, "Export failed: " + ex.getMessage()).showAndWait(); }
+            catch (Exception ex) {
+                var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + ex.getMessage());
+                brandDialog(a);
+                a.showAndWait();
+            }
         });
 
         MenuItem copyDiag = new MenuItem("Copy Error Details");
@@ -734,6 +786,7 @@ public class MainView {
     /** Per-tab columns like Screaming Frog — same data, focused views. */
     private void refreshColumns() {
         if (table == null) return;
+        table.getSortOrder().clear();
         table.getColumns().clear();
         switch (currentFilter) {
             case "All" -> {
@@ -886,14 +939,22 @@ public class MainView {
     private TableView<LinkRef> makeOutlinkTable() {
         TableView<LinkRef> tv = new TableView<>();
         tv.setPlaceholder(new Label("Select a URL above to see outlinks."));
-        TableColumn<LinkRef, String> to = new TableColumn<>("To (target)");
+        TableColumn<LinkRef, String> to = new TableColumn<>();
         to.setCellValueFactory(new PropertyValueFactory<>("target")); to.setPrefWidth(460);
-        TableColumn<LinkRef, String> anchor = new TableColumn<>("Anchor Text");
+        markSortable(to, "To (target)");
+        to.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> anchor = new TableColumn<>();
         anchor.setCellValueFactory(new PropertyValueFactory<>("anchor")); anchor.setPrefWidth(300);
-        TableColumn<LinkRef, String> rel = new TableColumn<>("Rel");
+        markSortable(anchor, "Anchor Text");
+        anchor.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> rel = new TableColumn<>();
         rel.setCellValueFactory(new PropertyValueFactory<>("rel")); rel.setPrefWidth(100);
-        TableColumn<LinkRef, String> st = new TableColumn<>("Status");
+        markSortable(rel, "Rel");
+        rel.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> st = new TableColumn<>();
         st.setCellValueFactory(cd -> new SimpleStringProperty(statusOf(cd.getValue().getTarget()))); st.setPrefWidth(180);
+        markSortable(st, "Status");
+        st.setComparator(String.CASE_INSENSITIVE_ORDER);
         tv.getColumns().addAll(to, anchor, rel, st);
         tv.setContextMenu(buildLinkContextMenu(tv, false));
         tv.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
@@ -907,14 +968,22 @@ public class MainView {
     private TableView<LinkRef> makeInlinkTable() {
         TableView<LinkRef> tv = new TableView<>();
         tv.setPlaceholder(new Label("Select a URL above to see inlinks."));
-        TableColumn<LinkRef, String> from = new TableColumn<>("From (source)");
+        TableColumn<LinkRef, String> from = new TableColumn<>();
         from.setCellValueFactory(new PropertyValueFactory<>("source")); from.setPrefWidth(460);
-        TableColumn<LinkRef, String> anchor = new TableColumn<>("Anchor Text");
+        markSortable(from, "From (source)");
+        from.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> anchor = new TableColumn<>();
         anchor.setCellValueFactory(new PropertyValueFactory<>("anchor")); anchor.setPrefWidth(300);
-        TableColumn<LinkRef, String> rel = new TableColumn<>("Rel");
+        markSortable(anchor, "Anchor Text");
+        anchor.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> rel = new TableColumn<>();
         rel.setCellValueFactory(new PropertyValueFactory<>("rel")); rel.setPrefWidth(100);
-        TableColumn<LinkRef, String> st = new TableColumn<>("Status");
+        markSortable(rel, "Rel");
+        rel.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<LinkRef, String> st = new TableColumn<>();
         st.setCellValueFactory(cd -> new SimpleStringProperty(statusOf(cd.getValue().getSource()))); st.setPrefWidth(180);
+        markSortable(st, "Status");
+        st.setComparator(String.CASE_INSENSITIVE_ORDER);
         tv.getColumns().addAll(from, anchor, rel, st);
         tv.setContextMenu(buildLinkContextMenu(tv, true));
         tv.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
@@ -928,12 +997,18 @@ public class MainView {
     private TableView<com.arachnode.model.ImageRef> makeImageTable() {
         TableView<com.arachnode.model.ImageRef> tv = new TableView<>();
         tv.setPlaceholder(new Label("Select a URL above to see its images."));
-        TableColumn<com.arachnode.model.ImageRef, String> src = new TableColumn<>("Image Source");
+        TableColumn<com.arachnode.model.ImageRef, String> src = new TableColumn<>();
         src.setCellValueFactory(new PropertyValueFactory<>("src")); src.setPrefWidth(480);
-        TableColumn<com.arachnode.model.ImageRef, String> alt = new TableColumn<>("Alt Text");
+        markSortable(src, "Image Source");
+        src.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<com.arachnode.model.ImageRef, String> alt = new TableColumn<>();
         alt.setCellValueFactory(new PropertyValueFactory<>("alt")); alt.setPrefWidth(300);
-        TableColumn<com.arachnode.model.ImageRef, String> st = new TableColumn<>("Alt Status");
+        markSortable(alt, "Alt Text");
+        alt.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<com.arachnode.model.ImageRef, String> st = new TableColumn<>();
         st.setCellValueFactory(new PropertyValueFactory<>("altStatus")); st.setPrefWidth(100);
+        markSortable(st, "Alt Status");
+        st.setComparator(String.CASE_INSENSITIVE_ORDER);
         tv.getColumns().addAll(src, alt, st);
         tv.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         MenuItem open = new MenuItem("Open image in Browser");
@@ -945,18 +1020,30 @@ public class MainView {
     }
 
     private TableView<CrawledPage> makeResourceTable() {
-        TableView<CrawledPage> tv = new TableView<>(resFiltered);
+        TableView<CrawledPage> tv = new TableView<>();
         tv.setPlaceholder(new Label("Linked resources (images, CSS, JS, files) appear here during the crawl."));
-        TableColumn<CrawledPage, String> addr = new TableColumn<>("Address");
+        TableColumn<CrawledPage, String> addr = new TableColumn<>();
         addr.setCellValueFactory(new PropertyValueFactory<>("url")); addr.setPrefWidth(380);
-        TableColumn<CrawledPage, String> kind = new TableColumn<>("Content");
+        markSortable(addr, "Address");
+        addr.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<CrawledPage, String> kind = new TableColumn<>();
         kind.setCellValueFactory(new PropertyValueFactory<>("contentKind")); kind.setPrefWidth(80);
-        TableColumn<CrawledPage, String> sc = new TableColumn<>("Status");
+        markSortable(kind, "Content");
+        kind.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<CrawledPage, Number> sc = new TableColumn<>();
         sc.setCellValueFactory(new PropertyValueFactory<>("statusCode")); sc.setPrefWidth(65);
-        TableColumn<CrawledPage, String> type = new TableColumn<>("Content Type");
+        markSortable(sc, "Status");
+        sc.setComparator((a, b) -> Double.compare(a == null ? Double.POSITIVE_INFINITY : a.doubleValue(),
+                b == null ? Double.POSITIVE_INFINITY : b.doubleValue()));
+        TableColumn<CrawledPage, String> type = new TableColumn<>();
         type.setCellValueFactory(new PropertyValueFactory<>("contentType")); type.setPrefWidth(200);
-        TableColumn<CrawledPage, String> size = new TableColumn<>("Size");
+        markSortable(type, "Content Type");
+        type.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<CrawledPage, Number> size = new TableColumn<>();
         size.setCellValueFactory(new PropertyValueFactory<>("sizeBytes")); size.setPrefWidth(90);
+        markSortable(size, "Size");
+        size.setComparator((a, b) -> Double.compare(a == null ? Double.POSITIVE_INFINITY : a.doubleValue(),
+                b == null ? Double.POSITIVE_INFINITY : b.doubleValue()));
         tv.getColumns().addAll(addr, kind, sc, type, size);
         tv.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         tv.setOnMouseClicked(e -> {
@@ -969,14 +1056,20 @@ public class MainView {
     private TableView<CrawledPage> makeDuplicateTable() {
         TableView<CrawledPage> tv = new TableView<>();
         tv.setPlaceholder(new Label("Select a URL to see pages sharing its content, title or meta description."));
-        TableColumn<CrawledPage, String> addr = new TableColumn<>("Duplicate URL");
+        TableColumn<CrawledPage, String> addr = new TableColumn<>();
         addr.setCellValueFactory(new PropertyValueFactory<>("url")); addr.setPrefWidth(380);
-        TableColumn<CrawledPage, String> how = new TableColumn<>("Match Type");
+        markSortable(addr, "Duplicate URL");
+        addr.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<CrawledPage, String> how = new TableColumn<>();
         how.setCellValueFactory(cd -> new SimpleStringProperty(duplicateMatchKind(
                 table.getSelectionModel().getSelectedItem(), cd.getValue())));
         how.setPrefWidth(220);
-        TableColumn<CrawledPage, String> title = new TableColumn<>("Title");
+        markSortable(how, "Match Type");
+        how.setComparator(String.CASE_INSENSITIVE_ORDER);
+        TableColumn<CrawledPage, String> title = new TableColumn<>();
         title.setCellValueFactory(new PropertyValueFactory<>("title")); title.setPrefWidth(280);
+        markSortable(title, "Title");
+        title.setComparator(String.CASE_INSENSITIVE_ORDER);
         tv.getColumns().addAll(addr, how, title);
         tv.setColumnResizePolicy(TableView.UNCONSTRAINED_RESIZE_POLICY);
         tv.setOnMouseClicked(e -> {
@@ -1055,8 +1148,10 @@ public class MainView {
 
     private void jumpTo(String url) {
         if (url == null || url.isEmpty()) return;
-        for (int i = 0; i < filtered.size(); i++) {
-            if (filtered.get(i).getUrl().equals(url)) {
+        // NOTE: table shows the sorted view, so navigate by view index, not filtered index.
+        var items = table.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).getUrl().equals(url)) {
                 table.getSelectionModel().select(i);
                 table.scrollTo(i);
                 return;
@@ -1069,8 +1164,9 @@ public class MainView {
         statusBox.setValue("All Status");
         issueBox.setValue("All Issues");
         selectTab("All");
-        for (int i = 0; i < filtered.size(); i++) {
-            if (filtered.get(i).getUrl().equals(url)) {
+        items = table.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            if (items.get(i).getUrl().equals(url)) {
                 table.getSelectionModel().select(i);
                 table.scrollTo(i);
                 return;
@@ -1093,6 +1189,7 @@ public class MainView {
         Dialog<ButtonType> d = new Dialog<>();
         d.setTitle("Spider Configuration");
         d.setHeaderText("Crawl limits & politeness");
+        brandDialog(d);
         GridPane g = new GridPane(); g.setHgap(10); g.setVgap(8); g.setPadding(new Insets(12));
         Spinner<Integer> maxDepth = new Spinner<>(1, 50, config.maxDepth);
         Spinner<Integer> timeout = new Spinner<>(5, 120, config.timeoutSeconds);
@@ -1410,14 +1507,9 @@ public class MainView {
         Dialog<ButtonType> d = new Dialog<>();
         d.setTitle("Custom Search");
         d.setHeaderText("Up to 5 text/regex queries counted per page. Text is case-insensitive; regex is case-sensitive — prefix (?i) for insensitive.");
-        d.initOwner(stage);
+        brandDialog(d);
         d.setResizable(true);
         d.getDialogPane().setPrefSize(620, 380);
-        try {
-            var cssUrl = getClass().getResource("/app.css");
-            if (cssUrl != null && !d.getDialogPane().getStylesheets().contains(cssUrl.toExternalForm()))
-                d.getDialogPane().getStylesheets().add(cssUrl.toExternalForm());
-        } catch (Exception ignored) {}
         VBox box = new VBox(8);
         box.setPadding(new Insets(12));
         List<TextField> names = new ArrayList<>();
@@ -1633,17 +1725,11 @@ public class MainView {
         Dialog<ButtonType> d = new Dialog<>();
         d.setTitle("Advanced Table Search");
         d.setHeaderText("Filter the results table — conditions in a group are ANDed, groups are ORed.");
-        d.initOwner(stage);
+        brandDialog(d);
         d.setResizable(true);
         d.getDialogPane().setPrefSize(880, 560);
         d.getDialogPane().setMinWidth(720);
         d.getDialogPane().getStyleClass().add("adv-dialog");
-        // Explicit: Dialogs get their own Scene — guarantee our design tokens resolve there.
-        try {
-            var cssUrl = getClass().getResource("/app.css");
-            if (cssUrl != null && !d.getDialogPane().getStylesheets().contains(cssUrl.toExternalForm()))
-                d.getDialogPane().getStylesheets().add(cssUrl.toExternalForm());
-        } catch (Exception ignored) {}
 
         // Working copy so Cancel discards edits.
         List<List<FilterRow>> uiGroups = new ArrayList<>();
@@ -1842,6 +1928,34 @@ public class MainView {
     }
 
     private String nvl(String s) { return s == null ? "" : s; }
+
+    private javafx.scene.image.Image appIcon() {
+        try {
+            var in = getClass().getResourceAsStream("/logo.png");
+            if (in != null) return new javafx.scene.image.Image(in);
+        } catch (Exception ignored) { /* default icon */ }
+        return null;
+    }
+
+    /** Every popup/modal gets the Arachnode logo in its title bar (no default JavaFX icon),
+     *  is owned by the main window, and shares the app stylesheet. Call before showAndWait(). */
+    private void brandDialog(Dialog<?> d) {
+        try { d.initOwner(stage); } catch (Exception ignored) { /* owner already set */ }
+        try {
+            var cssUrl = getClass().getResource("/app.css");
+            if (cssUrl != null && !d.getDialogPane().getStylesheets().contains(cssUrl.toExternalForm()))
+                d.getDialogPane().getStylesheets().add(cssUrl.toExternalForm());
+        } catch (Exception ignored) {}
+        var icon = appIcon();
+        if (icon == null) return;
+        d.setOnShowing(e -> {
+            try {
+                var scene = d.getDialogPane().getScene();
+                var win = scene == null ? null : scene.getWindow();
+                if (win instanceof Stage st && st.getIcons().isEmpty()) st.getIcons().add(icon);
+            } catch (Exception ignored) { /* keep default icon */ }
+        });
+    }
 
     private Predicate<CrawledPage> predicateFor(String tab) {
         return switch (tab) {
@@ -2223,7 +2337,11 @@ public class MainView {
         File f = fc.showSaveDialog(stage);
         if (f == null) return;
         try { CrawlExporter.toCsv(new ArrayList<>(allPages), f.toPath()); setStatus("Exported CSV: " + f); }
-        catch (Exception e) { new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage()).showAndWait(); }
+        catch (Exception e) {
+            var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage());
+            brandDialog(a);
+            a.showAndWait();
+        }
     }
 
     private void doExportSitemap() {
@@ -2232,7 +2350,11 @@ public class MainView {
         File f = fc.showSaveDialog(stage);
         if (f == null) return;
         try { CrawlExporter.toSitemap(new ArrayList<>(allPages), f.toPath()); setStatus("Exported sitemap: " + f); }
-        catch (Exception e) { new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage()).showAndWait(); }
+        catch (Exception e) {
+            var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage());
+            brandDialog(a);
+            a.showAndWait();
+        }
     }
 
     public void stop() { if (crawler != null) crawler.stop(); }
