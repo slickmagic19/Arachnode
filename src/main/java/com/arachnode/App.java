@@ -12,6 +12,8 @@ public class App extends Application {
     @Override
     public void start(Stage stage) {
         stage.setTitle("Arachnode — SEO Spider");
+        // Undecorated: custom title bar so dark mode themes the window chrome too.
+        stage.initStyle(javafx.stage.StageStyle.UNDECORATED);
         try {
             var logo = getClass().getResourceAsStream("/logo.png");
             if (logo != null) stage.getIcons().add(new javafx.scene.image.Image(logo));
@@ -19,8 +21,9 @@ public class App extends Application {
         view = new MainView(stage);
         Scene scene = view.build();
         stage.setScene(scene);
-        stage.setMaximized(true);
         stage.show();
+        view.startMaximized();
+        view.checkForUpdatesOnLaunch();
     }
 
     @Override

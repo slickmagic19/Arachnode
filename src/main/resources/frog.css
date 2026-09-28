@@ -1,0 +1,47 @@
+/* Arachnode "Screaming Frog" theme — frog-green accents, charcoal title bar. Loaded after app.css. */
+.root.sfrog {
+    -brand: #4e9a26;
+    -brand-dark: #3c7a1c;
+    -brand-ink: #2f6616;
+}
+
+/* signature dark header like SF's top bar */
+.root.sfrog .title-bar { -fx-background-color: #2b2b2b; -fx-border-color: #1e1e1e; }
+.root.sfrog .title-label { -fx-text-fill: #f4f4f5; }
+.root.sfrog .button.win-btn { -fx-text-fill: #d4d4d8; }
+.root.sfrog .button.win-btn:hover { -fx-background-color: #3f3f46; -fx-text-fill: #ffffff; }
+.root.sfrog .button.win-btn.win-close:hover { -fx-background-color: #dc2626; -fx-text-fill: white; }
+
+/* green primary surfaces (re-assert above neutrals, like dark mode does) */
+.root.sfrog .button.btn.btn-primary { -fx-background-color: -brand; -fx-border-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .button.btn.btn-primary:hover { -fx-background-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .button.mini-btn.mini-btn-primary { -fx-background-color: -brand; -fx-border-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .button.mini-btn.mini-btn-primary:hover { -fx-background-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .dialog-pane .button:default { -fx-background-color: -brand; -fx-border-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .dialog-pane .button:default:hover { -fx-background-color: -brand-dark; -fx-text-fill: white; }
+.root.sfrog .menu-button.tabs-menu .label { -fx-text-fill: -brand-ink; }
+.root.sfrog .menu-button.tabs-menu .arrow-button .arrow { -fx-background-color: -brand-ink; }
+.root.sfrog .check-box:selected .box { -fx-background-color: -brand; -fx-border-color: -brand-dark; }
+.root.sfrog .check-box:selected .mark { -fx-background-color: white; }
+.root.sfrog .check-menu-item:checked .label { -fx-text-fill: -brand-ink; -fx-font-weight: bold; }
+.dialog-pane.sfrog { -fx-background-color: #ffffff; }
+.dialog-pane.sfrog .button-bar { -fx-background-color: #ffffff; }
+.dialog-pane.sfrog .button:default { -fx-background-color: #4e9a26; -fx-border-color: #3c7a1c; -fx-text-fill: white; }
+.dialog-pane.sfrog .button:default:hover { -fx-background-color: #3c7a1c; -fx-text-fill: white; }
+
+/* selected table rows follow the frog accent (base rules hardcode blue) */
+.root.sfrog .table-view:focused .table-row-cell:selected { -fx-background-color: #3c7a1c; -fx-table-cell-border-color: #2f6616; }
+.root.sfrog .table-view:focused .table-row-cell:selected .table-cell { -fx-text-fill: #ffffff; -fx-font-weight: bold; }
+.root.sfrog .table-view .table-row-cell:selected { -fx-background-color: #d7ecc8; -fx-table-cell-border-color: #a9d18e; }
+.root.sfrog .table-view .table-row-cell:selected .table-cell { -fx-text-fill: #1e293b; -fx-font-weight: bold; }
+.root.sfrog .table-view .table-row-cell:selected:hover { -fx-background-color: #c2e2ac; }
+.root.sfrog .table-view:focused .table-row-cell:selected:hover { -fx-background-color: #2f6616; }
+.root.sfrog .table-view:focused .table-row-cell:selected:hover .table-cell { -fx-text-fill: #ffffff; }
+.root.sfrog .table-view .table-row-cell.row-err:selected,
+.root.sfrog .table-view .table-row-cell.row-client:selected,
+.root.sfrog .table-view .table-row-cell.row-redirect:selected,
+.root.sfrog .table-view .table-row-cell.row-blocked:selected { -fx-background-color: #d7ecc8; }
+.root.sfrog .table-view:focused .table-row-cell.row-err:selected,
+.root.sfrog .table-view:focused .table-row-cell.row-client:selected,
+.root.sfrog .table-view:focused .table-row-cell.row-redirect:selected,
+.root.sfrog .table-view:focused .table-row-cell.row-blocked:selected { -fx-background-color: #3c7a1c; }

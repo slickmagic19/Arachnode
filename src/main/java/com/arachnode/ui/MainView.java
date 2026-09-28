@@ -61,6 +61,14 @@ public class MainView {
     private Tab serpTab;
     private TextArea sourceArea;
     private Tab sourceTab;
+    private final java.util.Map<String, String> sourceCache = new java.util.LinkedHashMap<>(32, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, String> e) { return size() > 30; }
+    };
+    private final java.util.concurrent.atomic.AtomicLong sourceReq = new java.util.concurrent.atomic.AtomicLong(0);
+    private static final java.net.http.HttpClient SRC_HTTP = java.net.http.HttpClient.newBuilder()
+            .connectTimeout(java.time.Duration.ofSeconds(10))
+            .followRedirects(java.net.http.HttpClient.Redirect.NEVER)
+            .build();
     private GridPane headersGrid;
     private Tab headersTab;
     private TextArea cookiesArea;
@@ -154,9 +162,186 @@ public class MainView {
         Scene scene = new Scene(root, 1280, 800);
         var css = getClass().getResource("/app.css");
         if (css != null) scene.getStylesheets().add(css.toExternalForm());
+        var darkCss = getClass().getResource("/dark.css");
+        if (darkCss != null) scene.getStylesheets().add(darkCss.toExternalForm());
+        var frogCss = getClass().getResource("/frog.css");
+        if (frogCss != null) scene.getStylesheets().add(frogCss.toExternalForm());
+        this.scene = scene;
+        applyTheme(getTheme());
+        installResize(scene);
         stage.setMinWidth(960);
         stage.setMinHeight(620);
         return scene;
+    }
+
+    /** Called once after show: start maximized within the work area (taskbar-safe). */
+    public void startMaximized() {
+        javafx.geometry.Rectangle2D vb = screenBounds();
+        prevX = stage.getX(); prevY = stage.getY(); prevW = stage.getWidth(); prevH = stage.getHeight();
+        stage.setX(vb.getMinX()); stage.setY(vb.getMinY());
+        stage.setWidth(vb.getWidth()); stage.setHeight(vb.getHeight());
+        winMaximized = true;
+    }
+
+    private javafx.geometry.Rectangle2D screenBounds() {
+        try {
+            for (var s : javafx.stage.Screen.getScreensForRectangle(
+                    stage.getX(), stage.getY(), stage.getWidth(), stage.getHeight()))
+                return s.getVisualBounds();
+        } catch (Exception ignored) {}
+        return javafx.stage.Screen.getPrimary().getVisualBounds();
+    }
+
+    private HBox buildTitleBar() {
+        javafx.scene.image.ImageView logo = new javafx.scene.image.ImageView();
+        try {
+            var in = getClass().getResourceAsStream("/logo.png");
+            if (in != null) { logo.setImage(new javafx.scene.image.Image(in)); in.close(); }
+        } catch (Exception ignored) {}
+        logo.setFitWidth(16); logo.setFitHeight(16);
+        logo.setPreserveRatio(true);
+        Label name = new Label("Arachnode — SEO Spider");
+        name.getStyleClass().add("title-label");
+        Region dragSpacer = new Region();
+        HBox.setHgrow(dragSpacer, Priority.ALWAYS);
+        HBox dragZone = new HBox(8, logo, name, dragSpacer);
+        dragZone.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        HBox.setHgrow(dragZone, Priority.ALWAYS);
+        dragZone.setOnMousePressed(e -> {
+            if (e.getClickCount() == 2) { toggleMaximize(); return; }
+            dragOffX = e.getScreenX() - stage.getX();
+            dragOffY = e.getScreenY() - stage.getY();
+        });
+        dragZone.setOnMouseDragged(e -> {
+            if (winMaximized || !e.isPrimaryButtonDown()) return;
+            stage.setX(e.getScreenX() - dragOffX);
+            stage.setY(e.getScreenY() - dragOffY);
+        });
+        dragZone.setOnMouseClicked(e -> { if (e.getClickCount() == 2) toggleMaximize(); });
+
+        Button min = new Button("–");
+        min.getStyleClass().add("win-btn");
+        min.setTooltip(new Tooltip("Minimize"));
+        min.setOnAction(e -> stage.setIconified(true));
+        winMax = new Button("□");
+        winMax.getStyleClass().add("win-btn");
+        winMax.setTooltip(new Tooltip("Maximize / Restore"));
+        winMax.setOnAction(e -> toggleMaximize());
+        Button close = new Button("✕");
+        close.getStyleClass().addAll("win-btn", "win-close");
+        close.setTooltip(new Tooltip("Close"));
+        close.setOnAction(e -> { stop(); stage.close(); });
+        for (Button b : List.of(min, winMax, close)) {
+            b.setMinWidth(46); b.setPrefWidth(46); b.setMaxWidth(46);
+            b.setMinHeight(32); b.setPrefHeight(32); b.setMaxHeight(32);
+            b.setFocusTraversable(false);
+        }
+        titleBar = new HBox(dragZone, min, winMax, close);
+        titleBar.getStyleClass().add("title-bar");
+        titleBar.setAlignment(javafx.geometry.Pos.CENTER_LEFT);
+        return titleBar;
+    }
+
+    private boolean insideTitleBar(Object target) {
+        Object n = target;
+        while (n instanceof javafx.scene.Node node) {
+            if (node == titleBar) return true;
+            n = node.getParent();
+        }
+        return false;
+    }
+
+    private void toggleMaximize() {
+        if (!winMaximized) {
+            prevX = stage.getX(); prevY = stage.getY(); prevW = stage.getWidth(); prevH = stage.getHeight();
+            var vb = screenBounds();
+            stage.setX(vb.getMinX()); stage.setY(vb.getMinY());
+            stage.setWidth(vb.getWidth()); stage.setHeight(vb.getHeight());
+            winMaximized = true;
+        } else {
+            stage.setX(prevX); stage.setY(prevY);
+            stage.setWidth(Math.max(prevW, 960)); stage.setHeight(Math.max(prevH, 620));
+            winMaximized = false;
+        }
+    }
+
+    /** Edge resize for the undecorated window (6px zones, min size honored). */
+    private void installResize(Scene scene) {
+        scene.setOnMouseMoved(e -> {
+            if (winMaximized) { scene.setCursor(javafx.scene.Cursor.DEFAULT); return; }
+            double x = e.getX(), y = e.getY(), w = scene.getWidth(), h = scene.getHeight();
+            boolean l = x < RESIZE_PAD, r = x > w - RESIZE_PAD, t = y < RESIZE_PAD, b = y > h - RESIZE_PAD;
+            var c = javafx.scene.Cursor.DEFAULT;
+            if (l && t) c = javafx.scene.Cursor.NW_RESIZE;
+            else if (r && t) c = javafx.scene.Cursor.NE_RESIZE;
+            else if (l && b) c = javafx.scene.Cursor.SW_RESIZE;
+            else if (r && b) c = javafx.scene.Cursor.SE_RESIZE;
+            else if (l) c = javafx.scene.Cursor.W_RESIZE;
+            else if (r) c = javafx.scene.Cursor.E_RESIZE;
+            else if (t) c = javafx.scene.Cursor.N_RESIZE;
+            else if (b) c = javafx.scene.Cursor.S_RESIZE;
+            scene.setCursor(c);
+        });
+        scene.setOnMouseDragged(e -> {
+            if (winMaximized || !e.isPrimaryButtonDown()) return;
+            if (insideTitleBar(e.getTarget())) return; // title-bar drag moves the window instead
+            double x = e.getScreenX(), y = e.getScreenY();
+            double sx = stage.getX(), sy = stage.getY(), sw = stage.getWidth(), sh = stage.getHeight();
+            var cur = scene.getCursor();
+            double minW = 960, minH = 620;
+            if (cur == javafx.scene.Cursor.E_RESIZE || cur == javafx.scene.Cursor.NE_RESIZE || cur == javafx.scene.Cursor.SE_RESIZE)
+                stage.setWidth(Math.max(minW, x - sx));
+            if (cur == javafx.scene.Cursor.S_RESIZE || cur == javafx.scene.Cursor.SE_RESIZE || cur == javafx.scene.Cursor.SW_RESIZE)
+                stage.setHeight(Math.max(minH, y - sy));
+            if (cur == javafx.scene.Cursor.W_RESIZE || cur == javafx.scene.Cursor.NW_RESIZE || cur == javafx.scene.Cursor.SW_RESIZE) {
+                double nw = Math.max(minW, sx + sw - x);
+                stage.setX(sx + sw - nw); stage.setWidth(nw);
+            }
+            if (cur == javafx.scene.Cursor.N_RESIZE || cur == javafx.scene.Cursor.NW_RESIZE || cur == javafx.scene.Cursor.NE_RESIZE) {
+                double nh = Math.max(minH, sy + sh - y);
+                stage.setY(sy + sh - nh); stage.setHeight(nh);
+            }
+        });
+    }
+
+    private Scene scene;
+    private static final String PREF_THEME = "theme";
+
+    // Custom window chrome (lets dark mode theme the title bar — OS chrome is unthemeable).
+    private HBox titleBar;
+    private Button winMax;
+    private double dragOffX, dragOffY;
+    private boolean winMaximized = false;
+    private double prevX, prevY, prevW, prevH;
+    private static final int RESIZE_PAD = 6;
+
+    private String getTheme() {
+        try {
+            var prefs = java.util.prefs.Preferences.userNodeForPackage(MainView.class);
+            String t = prefs.get(PREF_THEME, null);
+            if (t == null && prefs.getBoolean("darkMode", false)) t = "dark"; // migrate 1.x pref
+            return ("dark".equals(t) || "frog".equals(t)) ? t : "default";
+        } catch (Exception e) { return "default"; }
+    }
+
+    private void setTheme(String theme) {
+        try {
+            java.util.prefs.Preferences.userNodeForPackage(MainView.class).put(PREF_THEME, theme);
+        } catch (Exception ignored) {}
+        applyTheme(theme);
+    }
+
+    private String themeLabel(String theme) {
+        return "dark".equals(theme) ? "Dark Mode" : "frog".equals(theme) ? "Screaming Frog" : "Default";
+    }
+
+    private void applyTheme(String theme) {
+        if (scene == null) return;
+        var root = scene.getRoot();
+        root.getStyleClass().removeAll("dark", "sfrog");
+        if ("dark".equals(theme)) root.getStyleClass().add("dark");
+        else if ("frog".equals(theme)) root.getStyleClass().add("sfrog");
+        setStatus("Theme: " + themeLabel(theme) + ".");
     }
 
     // ---------- top ----------
@@ -181,16 +366,30 @@ public class MainView {
         mCustom.setOnAction(e -> showCustomSearchDialog());
         crawlMenu.getItems().addAll(mStart, mStop, new SeparatorMenuItem(), mConf, mCustom);
 
+        Menu viewMenu = new Menu("View");
+        ToggleGroup themeGroup = new ToggleGroup();
+        RadioMenuItem themeDefault = new RadioMenuItem("Default");
+        RadioMenuItem themeDark = new RadioMenuItem("Dark Mode");
+        RadioMenuItem themeFrog = new RadioMenuItem("Screaming Frog");
+        for (RadioMenuItem item : List.of(themeDefault, themeDark, themeFrog)) {
+            item.setToggleGroup(themeGroup);
+            viewMenu.getItems().add(item);
+        }
+        String cur = getTheme();
+        if ("dark".equals(cur)) themeDark.setSelected(true);
+        else if ("frog".equals(cur)) themeFrog.setSelected(true);
+        else themeDefault.setSelected(true);
+        themeDefault.setOnAction(e -> setTheme("default"));
+        themeDark.setOnAction(e -> setTheme("dark"));
+        themeFrog.setOnAction(e -> setTheme("frog"));
+
         Menu help = new Menu("Help");
+        MenuItem checkUpdates = new MenuItem("Check for Updates");
+        checkUpdates.setOnAction(e -> showUpdateCheckDialog(true));
         MenuItem about = new MenuItem("About Arachnode");
-        about.setOnAction(e -> {
-            var a = new Alert(Alert.AlertType.INFORMATION,
-                    "Arachnode 1.1 — desktop SEO spider.\nJava 21 + JavaFX + Virtual Threads.\nEnter a URL and press Start.");
-            brandDialog(a);
-            a.showAndWait();
-        });
-        help.getItems().add(about);
-        menu.getMenus().addAll(file, crawlMenu, help);
+        about.setOnAction(e -> showAboutDialog());
+        help.getItems().addAll(checkUpdates, new SeparatorMenuItem(), about);
+        menu.getMenus().addAll(file, crawlMenu, viewMenu, help);
 
         // Row 1: URL + crawl actions (fixed-size buttons so labels never truncate to "S…")
         urlField = new TextField("https://example.com");
@@ -310,7 +509,7 @@ public class MainView {
         VBox toolbar = new VBox(row1, row2);
         toolbar.getStyleClass().add("toolbar");
 
-        return new VBox(menu, toolbar);
+        return new VBox(buildTitleBar(), menu, toolbar);
     }
 
     /** Bottom status bar (SF parity): progress + message + rate + clickable stats. */
@@ -530,6 +729,12 @@ public class MainView {
         detailTabs.getStyleClass().add("detail-tabs");
         detailTabs.setPrefHeight(230);
         detailTabs.setMinHeight(190);
+        detailTabs.getSelectionModel().selectedItemProperty().addListener((o, a, b) -> {
+            if (b == sourceTab) {
+                CrawledPage sel = table.getSelectionModel().getSelectedItem();
+                if (sel != null) ensureSource(sel);
+            }
+        });
 
         applyFilter();
 
@@ -732,7 +937,10 @@ public class MainView {
             File f = fc.showSaveDialog(stage); if (f == null) return;
             try { CrawlExporter.toCsv(pages, f.toPath()); setStatus("Exported " + pages.size() + " selected rows: " + f); }
             catch (Exception ex) {
-                var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + ex.getMessage());
+                var a = new Alert(Alert.AlertType.ERROR);
+                a.setTitle("Export Failed");
+                a.setHeaderText(null);
+                a.setContentText("Export failed: " + ex.getMessage());
                 brandDialog(a);
                 a.showAndWait();
             }
@@ -1196,10 +1404,11 @@ public class MainView {
         TextField ua = new TextField(config.userAgent); ua.setPrefWidth(420);
         CheckBox robots = new CheckBox("Respect robots.txt"); robots.setSelected(config.respectRobots);
         CheckBox followExt = new CheckBox("Crawl external URLs (slower)"); followExt.setSelected(config.followExternal);
+        CheckBox updCheck = new CheckBox("Check for updates on launch"); updCheck.setSelected(isUpdateCheckEnabled());
         g.add(new Label("Max depth:"), 0, 0); g.add(maxDepth, 1, 0);
         g.add(new Label("Timeout (s):"), 0, 1); g.add(timeout, 1, 1);
         g.add(new Label("User-Agent:"), 0, 2); g.add(ua, 1, 2);
-        g.add(robots, 0, 3, 2, 1); g.add(followExt, 0, 4, 2, 1);
+        g.add(robots, 0, 3, 2, 1); g.add(followExt, 0, 4, 2, 1); g.add(updCheck, 0, 5, 2, 1);
         d.getDialogPane().setContent(g);
         d.getDialogPane().getButtonTypes().addAll(ButtonType.OK, ButtonType.CANCEL);
         var r = d.showAndWait();
@@ -1209,6 +1418,7 @@ public class MainView {
             config.userAgent = ua.getText();
             config.respectRobots = robots.isSelected();
             config.followExternal = followExt.isSelected();
+            setUpdateCheckEnabled(updCheck.isSelected());
             setStatus("Spider config saved (depth " + config.maxDepth + ", timeout " + config.timeoutSeconds + "s).");
         }
     }
@@ -1939,12 +2149,179 @@ public class MainView {
 
     /** Every popup/modal gets the Arachnode logo in its title bar (no default JavaFX icon),
      *  is owned by the main window, and shares the app stylesheet. Call before showAndWait(). */
+    /** About box: custom content (no Modena Alert header) so it themes in every mode. */
+    private void showAboutDialog() {
+        Dialog<ButtonType> d = new Dialog<>();
+        d.setTitle("About");
+        javafx.scene.image.ImageView logo = new javafx.scene.image.ImageView();
+        try {
+            var in = getClass().getResourceAsStream("/logo.png");
+            if (in != null) { logo.setImage(new javafx.scene.image.Image(in)); in.close(); }
+        } catch (Exception ignored) {}
+        logo.setFitWidth(48); logo.setFitHeight(48);
+        logo.setPreserveRatio(true);
+        Label name = new Label("Arachnode " + com.arachnode.update.AppVersion.current());
+        name.getStyleClass().add("about-name");
+        Label sub = new Label("Desktop SEO spider");
+        sub.getStyleClass().add("about-sub");
+        Label body = new Label("Java 21 + JavaFX + Virtual Threads.\nEnter a URL and press Start.");
+        body.getStyleClass().add("about-body");
+        Label credit = new Label("Built by slickmagic19.");
+        credit.getStyleClass().add("about-credit");
+        VBox box = new VBox(8, logo, name, sub, body, credit);
+        box.setAlignment(javafx.geometry.Pos.CENTER);
+        box.setPadding(new Insets(20, 28, 12, 28));
+        box.getStyleClass().add("about-box");
+        d.getDialogPane().setContent(box);
+        d.getDialogPane().getButtonTypes().add(ButtonType.OK);
+        brandDialog(d);
+        d.showAndWait();
+    }
+
+    // ---------- updates (GitHub Releases; portable-safe: download new exe + run once) ----------
+    private static final String PREF_UPDATE = "updateCheck";
+    private com.arachnode.update.UpdateChecker.ReleaseInfo latestRelease;
+
+    private boolean isUpdateCheckEnabled() {
+        try {
+            return java.util.prefs.Preferences.userNodeForPackage(MainView.class).getBoolean(PREF_UPDATE, true);
+        } catch (Exception e) { return true; }
+    }
+
+    private void setUpdateCheckEnabled(boolean on) {
+        try {
+            java.util.prefs.Preferences.userNodeForPackage(MainView.class).putBoolean(PREF_UPDATE, on);
+        } catch (Exception ignored) {}
+    }
+
+    /** Silent on-launch check: only speaks up (status bar) when an update exists. */
+    public void checkForUpdatesOnLaunch() {
+        if (!isUpdateCheckEnabled()) return;
+        Thread.ofVirtual().name("arachnode-update-check").start(() -> {
+            var rel = com.arachnode.update.UpdateChecker.latest();
+            if (rel != null && com.arachnode.update.UpdateChecker.isNewer(rel.tag())) {
+                latestRelease = rel;
+                Platform.runLater(() -> setStatus("Update available: " + rel.tag()
+                        + " (you have " + com.arachnode.update.AppVersion.current()
+                        + ") — Help > Check for Updates."));
+            }
+        });
+    }
+
+    private void showUpdateCheckDialog(boolean manual) {
+        Dialog<ButtonType> d = new Dialog<>();
+        d.setTitle("Check for Updates");
+        Label title = new Label("Checking for updates…");
+        title.getStyleClass().add("update-title");
+        TextArea notes = new TextArea();
+        notes.setEditable(false);
+        notes.setWrapText(true);
+        notes.setPrefRowCount(8);
+        notes.setPrefWidth(460);
+        notes.setVisible(false);
+        notes.setManaged(false);
+        notes.getStyleClass().add("update-notes");
+        Label state = new Label("");
+        state.getStyleClass().add("update-state");
+        state.setWrapText(true);
+        ButtonType dlType = new ButtonType("Download Update", ButtonBar.ButtonData.OK_DONE);
+        ButtonType pageType = new ButtonType("Open Releases Page", ButtonBar.ButtonData.OTHER);
+        VBox box = new VBox(8, title, notes, state);
+        box.setPadding(new Insets(12));
+        box.getStyleClass().add("update-box");
+        d.getDialogPane().setContent(box);
+        d.getDialogPane().getButtonTypes().addAll(dlType, pageType, ButtonType.CLOSE);
+        var dlBtn = d.getDialogPane().lookupButton(dlType);
+        dlBtn.getStyleClass().addAll("btn", "btn-primary");
+        var pageBtn = d.getDialogPane().lookupButton(pageType);
+        pageBtn.getStyleClass().add("btn");
+        var closeBtn = d.getDialogPane().lookupButton(ButtonType.CLOSE);
+        closeBtn.getStyleClass().add("btn");
+        dlBtn.setDisable(true);
+        brandDialog(d);
+        // Fill in async so the dialog opens instantly.
+        Thread.ofVirtual().name("arachnode-update-check").start(() -> {
+            var rel = com.arachnode.update.UpdateChecker.latest();
+            Platform.runLater(() -> {
+                if (rel == null) {
+                    title.setText("Up to date (" + com.arachnode.update.AppVersion.current() + ")");
+                    state.setText(manual ? "No newer release found (or offline — try again later)."
+                            : "Could not reach the update server.");
+                    return;
+                }
+                latestRelease = rel;
+                if (!com.arachnode.update.UpdateChecker.isNewer(rel.tag())) {
+                    title.setText("Up to date (" + com.arachnode.update.AppVersion.current() + ")");
+                    state.setText("Latest release is " + rel.tag() + " — nothing to do.");
+                    return;
+                }
+                title.setText("Update available: " + rel.tag() + " (you have "
+                        + com.arachnode.update.AppVersion.current() + ")");
+                if (rel.notes() != null && !rel.notes().isBlank()) {
+                    String n = rel.notes().length() > 3000 ? rel.notes().substring(0, 3000) + "…" : rel.notes();
+                    notes.setText(n);
+                    notes.setVisible(true);
+                    notes.setManaged(true);
+                }
+                boolean hasAsset = rel.assetUrl() != null && !rel.assetUrl().isEmpty();
+                state.setText(hasAsset ? "Portable update available." : "No portable file attached.");
+                dlBtn.setDisable(!hasAsset);
+            });
+        });
+        var r = d.showAndWait();
+        if (r.isPresent() && r.get() == pageType) {
+            openInBrowser(com.arachnode.update.UpdateChecker.releasesPage());
+        } else if (r.isPresent() && r.get() == dlType && latestRelease != null) {
+            downloadRelease(latestRelease);
+        }
+    }
+
+    private void downloadRelease(com.arachnode.update.UpdateChecker.ReleaseInfo rel) {
+        setStatus("Downloading update " + rel.tag() + " …");
+        Thread.ofVirtual().name("arachnode-update-dl").start(() -> {
+            var file = com.arachnode.update.UpdateChecker.download(rel);
+            Platform.runLater(() -> {
+                if (file == null) {
+                    setStatus("Download failed — open the releases page instead.");
+                    new Alert(Alert.AlertType.WARNING, "Download failed. Open Help > Check for Updates > Open Releases Page and grab it manually.").showAndWait();
+                    return;
+                }
+                setStatus("Downloaded update: " + file);
+                var confirm = new Alert(Alert.AlertType.INFORMATION,
+                        "Downloaded to:\n" + file + "\n\nLaunch the new version now and exit this one?");
+                confirm.setTitle("Update Downloaded");
+                confirm.setHeaderText(null);
+                brandDialog(confirm);
+                confirm.getButtonTypes().setAll(new ButtonType("Launch & Exit", ButtonBar.ButtonData.OK_DONE), ButtonType.CANCEL);
+                var c = confirm.showAndWait();
+                if (c.isPresent() && "Launch & Exit".equals(c.get().getText())) {
+                    try { new ProcessBuilder(file.toString()).start(); } catch (Exception ignored) {}
+                    Platform.exit();
+                }
+            });
+        });
+    }
+
     private void brandDialog(Dialog<?> d) {
         try { d.initOwner(stage); } catch (Exception ignored) { /* owner already set */ }
         try {
             var cssUrl = getClass().getResource("/app.css");
             if (cssUrl != null && !d.getDialogPane().getStylesheets().contains(cssUrl.toExternalForm()))
                 d.getDialogPane().getStylesheets().add(cssUrl.toExternalForm());
+            var darkUrl = getClass().getResource("/dark.css");
+            if (darkUrl != null && !d.getDialogPane().getStylesheets().contains(darkUrl.toExternalForm()))
+                d.getDialogPane().getStylesheets().add(darkUrl.toExternalForm());
+            var frogUrl = getClass().getResource("/frog.css");
+            if (frogUrl != null && !d.getDialogPane().getStylesheets().contains(frogUrl.toExternalForm()))
+                d.getDialogPane().getStylesheets().add(frogUrl.toExternalForm());
+            // Dialogs live in their own scene: mirror the app's theme classes onto the
+            // dialog pane itself (same-element match — descendant selectors can't be trusted here).
+            String theme = getTheme();
+            var sc = d.getDialogPane().getStyleClass();
+            sc.removeAll("dark", "sfrog");
+            if (!sc.contains("root")) sc.add("root");
+            if ("dark".equals(theme)) sc.add("dark");
+            else if ("frog".equals(theme)) sc.add("sfrog");
         } catch (Exception ignored) {}
         var icon = appIcon();
         if (icon == null) return;
@@ -2001,7 +2378,9 @@ public class MainView {
             inTable.setItems(FXCollections.observableArrayList());
             imgTable.setItems(FXCollections.observableArrayList());
             dupTable.setItems(FXCollections.observableArrayList());
+            sourceReq.incrementAndGet(); // cancel any in-flight source fetch
             sourceArea.setText("");
+            sourceTab.setText("View Source");
             cookiesArea.setText("");
             structArea.setText("");
             structCount.setText("");
@@ -2124,9 +2503,8 @@ public class MainView {
         serpUrl.setText(displayHost(p.getUrl()));
         serpDesc.setText(p.getMetaDescription().isEmpty() ? "No meta description — Google will generate a snippet from page content." : p.getMetaDescription());
 
-        // View Source tab: stored head of the HTML.
-        sourceArea.setText(p.getHtmlSnippet().isEmpty() ? "No stored source for this URL (non-HTML, redirect or not yet crawled)." : p.getHtmlSnippet());
-        sourceTab.setText("View Source" + (p.getHtmlSnippet().isEmpty() ? "" : " (" + fmtBytes(p.getHtmlSnippet().length()) + ")"));
+        // View Source tab: full source, fetched on open (never stored for every page).
+        ensureSource(p);
 
         // Cookies tab: Set-Cookie response headers.
         cookiesArea.setText(p.getCookies().isEmpty() ? "No cookies set by this URL's response." : p.getCookies());
@@ -2162,6 +2540,77 @@ public class MainView {
         dups.sort(Comparator.comparing(CrawledPage::getUrl));
         dupTable.setItems(FXCollections.observableArrayList(dups));
         dupTab.setText("Duplicate Details (" + dups.size() + ")");
+    }
+
+    /** View Source (fetch-on-open): full source for one URL, small LRU cache. */
+    private void ensureSource(CrawledPage p) {
+        String cached;
+        synchronized (sourceCache) { cached = sourceCache.get(p.getUrl()); }
+        if (cached != null) {
+            sourceArea.setText(cached);
+            sourceTab.setText("View Source (" + fmtBytes(cached.length()) + ")");
+            return;
+        }
+        if (detailTabs.getSelectionModel().getSelectedItem() != sourceTab) {
+            sourceArea.setText(p.getHtmlSnippet().isEmpty()
+                    ? "Open the View Source tab to load the full source for this URL."
+                    : p.getHtmlSnippet() + "\n\n… (stored preview — open the View Source tab for the full source)");
+            sourceTab.setText("View Source");
+            return;
+        }
+        fetchSource(p);
+    }
+
+    private void fetchSource(CrawledPage p) {
+        String url = p.getUrl();
+        if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) {
+            sourceArea.setText("No fetchable URL for this row.");
+            sourceTab.setText("View Source");
+            return;
+        }
+        long myReq = sourceReq.incrementAndGet();
+        sourceArea.setText("Fetching full source for " + url + " …");
+        sourceTab.setText("View Source (…)");
+        Thread.ofVirtual().name("arachnode-source").start(() -> {
+            String result;
+            try {
+                java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(java.net.URI.create(url))
+                        .timeout(java.time.Duration.ofSeconds(config.timeoutSeconds))
+                        .header("User-Agent", config.userAgent)
+                        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/*,*/*;q=0.8")
+                        .header("Accept-Encoding", "gzip")
+                        .GET().build();
+                java.net.http.HttpResponse<byte[]> res =
+                        SRC_HTTP.send(req, java.net.http.HttpResponse.BodyHandlers.ofByteArray());
+                byte[] body = res.body() == null ? new byte[0] : res.body();
+                String enc = res.headers().firstValue("content-encoding").orElse("");
+                if (body.length > 0 && enc.contains("gzip")) {
+                    try (java.util.zip.GZIPInputStream gis = new java.util.zip.GZIPInputStream(new java.io.ByteArrayInputStream(body))) {
+                        body = gis.readAllBytes();
+                    } catch (Exception ignored) { /* show raw bytes as text */ }
+                }
+                result = new String(body, java.nio.charset.StandardCharsets.UTF_8);
+                if (result.isEmpty()) result = "(empty response body)";
+            } catch (Exception e) {
+                String m = e.getMessage();
+                result = "Could not fetch source: " + e.getClass().getSimpleName()
+                        + (m == null || m.isBlank() ? "" : " — " + m.trim());
+            }
+            final String out = result;
+            Platform.runLater(() -> {
+                if (sourceReq.get() != myReq) return; // superseded
+                CrawledPage sel = table.getSelectionModel().getSelectedItem();
+                if (sel == null || !sel.getUrl().equals(url)) return; // user moved on
+                if (out.startsWith("Could not fetch source:")) {
+                    sourceArea.setText(out);
+                    sourceTab.setText("View Source");
+                } else {
+                    synchronized (sourceCache) { sourceCache.put(url, out); }
+                    sourceArea.setText(out);
+                    sourceTab.setText("View Source (" + fmtBytes(out.length()) + ")");
+                }
+            });
+        });
     }
 
     private String displayHost(String url) {
@@ -2338,7 +2787,10 @@ public class MainView {
         if (f == null) return;
         try { CrawlExporter.toCsv(new ArrayList<>(allPages), f.toPath()); setStatus("Exported CSV: " + f); }
         catch (Exception e) {
-            var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage());
+            var a = new Alert(Alert.AlertType.ERROR);
+            a.setTitle("Export Failed");
+            a.setHeaderText(null);
+            a.setContentText("Export failed: " + e.getMessage());
             brandDialog(a);
             a.showAndWait();
         }
@@ -2351,7 +2803,10 @@ public class MainView {
         if (f == null) return;
         try { CrawlExporter.toSitemap(new ArrayList<>(allPages), f.toPath()); setStatus("Exported sitemap: " + f); }
         catch (Exception e) {
-            var a = new Alert(Alert.AlertType.ERROR, "Export failed: " + e.getMessage());
+            var a = new Alert(Alert.AlertType.ERROR);
+            a.setTitle("Export Failed");
+            a.setHeaderText(null);
+            a.setContentText("Export failed: " + e.getMessage());
             brandDialog(a);
             a.showAndWait();
         }

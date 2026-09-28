@@ -10,6 +10,18 @@
 
 .menu-bar { -fx-background-color: #ffffff; -fx-border-color: #e2e6ee; -fx-border-width: 0 0 1 0; -fx-padding: 2 6 2 6; }
 
+/* custom window chrome: logo + title + min/max/close (themeable, unlike OS chrome) */
+.title-bar { -fx-background-color: #eef2f8; -fx-border-color: #e2e6ee; -fx-border-width: 0 0 1 0; -fx-padding: 0 0 0 10; -fx-spacing: 0; -fx-alignment: center-left; -fx-min-height: 32; -fx-pref-height: 32; -fx-max-height: 32; }
+.title-label { -fx-font-size: 12px; -fx-text-fill: #0f172a; }
+.button.win-btn {
+    -fx-background-color: transparent; -fx-background-radius: 0; -fx-border-radius: 0;
+    -fx-text-fill: #475569; -fx-font-size: 12px; -fx-cursor: hand; -fx-background-insets: 0;
+}
+.button.win-btn:hover { -fx-background-color: #e2e8f0; -fx-text-fill: #0f172a; }
+.button.win-btn:pressed { -fx-background-color: #cbd5e1; }
+.button.win-btn.win-close:hover { -fx-background-color: #dc2626; -fx-text-fill: white; }
+.button.win-btn.win-close:pressed { -fx-background-color: #991b1b; -fx-text-fill: white; }
+
 /* Two-row toolbar: row1 URL+actions, row2 options+filters (wraps on narrow windows) */
 .toolbar { -fx-background-color: #ffffff; -fx-border-color: #e2e6ee; -fx-border-width: 0 0 1 0; -fx-padding: 8 12 8 12; -fx-spacing: 8; }
 .toolbar-row { -fx-background-color: transparent; -fx-padding: 2 0 2 0; -fx-hgap: 8; -fx-vgap: 6; }
@@ -150,8 +162,12 @@
 }
 .menu-button.tabs-menu:hover { -fx-background-color: #e2e8f0; -fx-text-fill: -ink; }
 .menu-button.tabs-menu:focused { -fx-border-color: -brand; }
-.menu-button.tabs-menu .label { -fx-text-fill: -body; -fx-font-size: 11px; -fx-font-weight: bold; -fx-padding: 4 2 4 6; }
+.menu-button.tabs-menu .label { -fx-text-fill: -brand; -fx-font-size: 11px; -fx-font-weight: bold; -fx-padding: 4 2 4 6; }
 .menu-button.tabs-menu .arrow-button { -fx-padding: 0 6 0 0; }
+.menu-button.tabs-menu .arrow-button .arrow { -fx-background-color: -brand; }
+.check-box:selected .box { -fx-background-color: -brand; -fx-border-color: -brand-dark; }
+.check-box:selected .mark { -fx-background-color: white; }
+.check-menu-item:checked .label { -fx-text-fill: -brand-ink; -fx-font-weight: bold; }
 /* ---- bottom detail tabs: same language, tighter ---- */
 .detail-tabs .tab-header-area { -fx-background-color: #eef2f8; -fx-padding: 4 10 0 10; }
 .detail-tabs .tab-header-background { -fx-background-color: transparent; -fx-border-color: -line; -fx-border-width: 0 0 1 0; }
@@ -211,6 +227,15 @@
 
 .tip-label { -fx-text-fill: #64748b; -fx-font-size: 11px; }
 .context-menu { -fx-background-radius: 8; -fx-border-radius: 8; -fx-padding: 4; }
+.about-box { -fx-background-color: transparent; }
+.about-name { -fx-font-size: 17px; -fx-font-weight: bold; -fx-text-fill: #0f172a; }
+.about-sub { -fx-font-size: 12px; -fx-text-fill: #0b6ece; -fx-font-weight: bold; }
+.about-body { -fx-font-size: 12px; -fx-text-fill: #334155; -fx-text-alignment: center; }
+.about-credit { -fx-font-size: 11px; -fx-text-fill: #64748b; -fx-font-style: italic; }
+.update-box { -fx-background-color: #ffffff; }
+.update-title { -fx-font-size: 13px; -fx-font-weight: bold; -fx-text-fill: #0f172a; }
+.update-state { -fx-font-size: 11.5px; -fx-text-fill: #475569; }
+.update-notes { -fx-font-size: 11.5px; }
 
 /* Modern URL Details cards */
 .detail-scroll { -fx-background-color: #f8fafc; -fx-padding: 0; }
